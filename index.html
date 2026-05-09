@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>AI Air Draw Pro - Cross Browser</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;600&display=swap" rel="stylesheet"/>
+
+<!-- MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+<style>
+
+*{
+margin:0;
+padding:0;
+box-sizing:border-box;
+}
+
+body{
+overflow:hidden;
+background:#000;
+font-family:Arial;
+}
+
+video,
+canvas{
+position:absolute;
+top:0;
+left:0;
+width:100%;
+height:100%;
+object-fit:cover;
+touch-action:none;
+}
+
+#drawCanvas{
+z-index:2;
+}
+
+#trackCanvas{
+z-index:3;
+pointer-events:none;
+}
+
+#ui{
+position:fixed;
+top:10px;
+left:10px;
+z-index:100;
+display:flex;
+gap:10px;
+flex-wrap:wrap;
+}
+
+button{
+padding:10px 15px;
+border:none;
+border-radius:10px;
+background:#00f0ff;
+color:#000;
+font-weight:bold;
+cursor:pointer;
+}
+
+button:hover{
+opacity:.8;
+}
+
+#status{
+position:fixed;
+bottom:10px;
+left:50%;
+transform:translateX(-50%);
+z-index:100;
+padding:10px 20px;
+background:rgba(0,0,0,.6);
+color:#00f0ff;
+border-radius:30px;
+font-size:14px;
+}
+
+</style>
+</head>
+<body>
+
+<video
+id="webcam"
+autoplay
+muted
+playsinline
+webkit-playsinline
+></video>
+
+<canvas id="drawCanvas"></canvas>
+<canvas id="trackCanvas"></canvas>
+
+<div id="ui">
+<button onclick="clearCanvas()">Clear</button>
+<button onclick="saveDrawing()">Save</button>
+<button onclick="toggleMirror()">Mirror</button>
+</div>
+
+<div id="status">
+Loading AI...
+</div>
+
+<script>
+
+/* =========================
+   Browser Support Check
+========================= */
+
+if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+  alert("Browser camera support نہیں کرتا");
+}
+
+/* =========================
+   Elements
+========================= */
+
+const video = document.getElementById("webcam");
+const drawCanvas = document.getElementById("drawCanvas");
+const trackCanvas = document.getElementById("trackCanvas");
+
+const dCtx = drawCanvas.getContext("2d");
+const tCtx = trackCanvas.getContext("2d");
+
+const statusText = document.getElementById("status");
+
+/* =========================
+   State
+========================= */
+
+let prevX = null;
+let prevY = null;
+
+let mirrored = true;
+
+let brushColor = "#00f0ff";
+let brushSize = 6;
+
+/* =========================
+   Resize
+========================= */
+
+function resizeCanvas(){
+
+drawCanvas.width = window.innerWidth;
+drawCanvas.height = window.innerHeight;
+
+trackCanvas.width = window.innerWidth;
+trackCanvas.height = window.innerHeight;
+
+}
+
+resizeCanvas();
+
+window.addEventListener("resize", resizeCanvas);
+
+/* =========================
+   Start Camera
+========================= */
+
+async function startCamera(){
+
+try{
+
+const stream = await navigator.mediaDevices.getUserMedia({
+video:{
+facingMode:"user",
+width:{ideal:1280},
+height:{ideal:720}
+},
+audio:false
+});
+
+video.srcObject = stream;
+
+await video.play();
+
+startAI();
+
+}catch(err){
+
+alert("Camera Error: " + err.message);
+
+}
+
+}
+
+/* =========================
+   MediaPipe Hands
+========================= */
+
+async function startAI(){
+
+const hands = new Hands({
+locateFile: (file) => {
+return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+}
+});
+
+hands.setOptions({
+maxNumHands:1,
+modelComplexity:0,
+minDetectionConfidence:0.7,
+minTrackingConfidence:0.7
+});
+
+hands.onResults(onResults);
+
+statusText.innerHTML = "AI Ready";
+
+startHandTracking(hands);
+
+}
+
+/* =========================
+   Cross Browser Tracking
+========================= */
+
+async function startHandTracking(hands){
+
+async function processFrame(){
+
+if(video.readyState >= 2){
+
+await hands.send({
+image: video
+});
+
+}
+
+requestAnimationFrame(processFrame);
+
+}
+
+processFrame();
+
+}
+
+/* =========================
+   Results
+========================= */
+
+function onResults(results){
+
+tCtx.clearRect(0,0,trackCanvas.width,trackCanvas.height);
+
+if(!results.multiHandLandmarks ||
+!results.multiHandLandmarks.length){
+
+statusText.innerHTML = "Searching Hand...";
+prevX = null;
+prevY = null;
+
+return;
+}
+
+const landmarks = results.multiHandLandmarks[0];
+
+const W = trackCanvas.width;
+const H = trackCanvas.height;
+
+function mx(x){
+return mirrored ? 1 - x : x;
+}
+
+function point(id){
+
+return{
+x: mx(landmarks[id].x) * W,
+y: landmarks[id].y * H
+};
+
+}
+
+const indexTip = point(8);
+const middleTip = point(12);
+
+const indexUp = landmarks[8].y < landmarks[6].y;
+const middleUp = landmarks[12].y < landmarks[10].y;
+
+drawSkeleton(landmarks,W,H,mx);
+
+if(indexUp && !middleUp){
+
+statusText.innerHTML = "DRAW MODE";
+
+drawCursor(indexTip.x,indexTip.y);
+
+if(prevX !== null){
+
+drawLine(
+prevX,
+prevY,
+indexTip.x,
+indexTip.y
+);
+
+}
+
+prevX = indexTip.x;
+prevY = indexTip.y;
+
+}else if(indexUp && middleUp){
+
+statusText.innerHTML = "ERASE MODE";
+
+eraseAt(indexTip.x,indexTip.y);
+
+prevX = null;
+prevY = null;
+
+}else{
+
+statusText.innerHTML = "STANDBY";
+
+prevX = null;
+prevY = null;
+
+}
+
+}
+
+/* =========================
+   Draw Line
+========================= */
+
+function drawLine(x1,y1,x2,y2){
+
+dCtx.save();
+
+dCtx.strokeStyle = brushColor;
+dCtx.lineWidth = brushSize;
+
+dCtx.lineCap = "round";
+
+dCtx.shadowColor = brushColor;
+dCtx.shadowBlur = 15;
+
+dCtx.beginPath();
+
+dCtx.moveTo(x1,y1);
+dCtx.lineTo(x2,y2);
+
+dCtx.stroke();
+
+dCtx.restore();
+
+}
+
+/* =========================
+   Eraser
+========================= */
+
+function eraseAt(x,y){
+
+dCtx.save();
+
+dCtx.globalCompositeOperation = "destination-out";
+
+dCtx.beginPath();
+
+dCtx.arc(
+x,
+y,
+brushSize * 4,
+0,
+Math.PI * 2
+);
+
+dCtx.fill();
+
+dCtx.restore();
+
+}
+
+/* =========================
+   Cursor
+========================= */
+
+function drawCursor(x,y){
+
+tCtx.beginPath();
+
+tCtx.arc(x,y,18,0,Math.PI*2);
+
+tCtx.strokeStyle = "#00f0ff";
+tCtx.lineWidth = 3;
+
+tCtx.shadowColor = "#00f0ff";
+tCtx.shadowBlur = 15;
+
+tCtx.stroke();
+
+}
+
+/* =========================
+   Skeleton
+========================= */
+
+const connections = [
+
+[0,1],[1,2],[2,3],[3,4],
+[0,5],[5,6],[6,7],[7,8],
+[0,9],[9,10],[10,11],[11,12],
+[0,13],[13,14],[14,15],[15,16],
+[0,17],[17,18],[18,19],[19,20]
+
+];
+
+function drawSkeleton(lm,W,H,mx){
+
+tCtx.save();
+
+tCtx.strokeStyle = "#00f0ff";
+tCtx.lineWidth = 2;
+
+for(let c of connections){
+
+const a = c[0];
+const b = c[1];
+
+tCtx.beginPath();
+
+tCtx.moveTo(
+mx(lm[a].x) * W,
+lm[a].y * H
+);
+
+tCtx.lineTo(
+mx(lm[b].x) * W,
+lm[b].y * H
+);
+
+tCtx.stroke();
+
+}
+
+tCtx.restore();
+
+}
+
+/* =========================
+   Clear
+========================= */
+
+function clearCanvas(){
+
+dCtx.clearRect(
+0,
+0,
+drawCanvas.width,
+drawCanvas.height
+);
+
+}
+
+/* =========================
+   Save
+========================= */
+
+function saveDrawing(){
+
+const link = document.createElement("a");
+
+link.download = "drawing.png";
+
+link.href = drawCanvas.toDataURL();
+
+link.click();
+
+}
+
+/* =========================
+   Mirror
+========================= */
+
+function toggleMirror(){
+
+mirrored = !mirrored;
+
+video.style.transform =
+mirrored
+? "scaleX(-1)"
+: "scaleX(1)";
+
+drawCanvas.style.transform =
+mirrored
+? "scaleX(-1)"
+: "scaleX(1)";
+
+trackCanvas.style.transform =
+mirrored
+? "scaleX(-1)"
+: "scaleX(1)";
+
+}
+
+/* =========================
+   Default Mirror
+========================= */
+
+toggleMirror();
+
+/* =========================
+   Start App
+========================= */
+
+startCamera();
+
+</script>
+
+</body>
+</html>
